@@ -65,6 +65,17 @@ undocumented DWM objects and a wrong guess can crash the compositor.
 | Windows 11 26H1 | 28000 | Separate branch | **Rejected** - DWM layout unverified |
 | Any other future build | - | - | **Rejected** until verified |
 
+> [!IMPORTANT]
+> **KB5127936 (build 26300.9818 / 26200.9818, October 2026 preview) breaks the
+> Present hook.** That update replaces `dwmcore.dll` with a larger image
+> (`imageSize 0x483000` vs `0x44B000` on 26300.9711) and changes the
+> `COverlayContext::Present` prologue, so the 46-byte AOB no longer matches.
+> The DLL detects this and safely refuses to hook, logging
+> `DWM LUT refusing to hook: required Present AOB did not match on this build`.
+> See [Recovering after a cumulative update](#recovering-after-a-cumulative-update).
+> KB5127936 is an optional preview; its contents are normally folded into the
+> following month's security update, so other 25H2/26H2 systems will hit this.
+
 **Why 26H2 works with the 25H2 layout.** Microsoft delivers 26H2 as an
 enablement package (KB5121794): 24H2, 25H2 and 26H2 share the `ge_release`
 servicing branch and an identical set of system files. Only the build number
@@ -180,6 +191,9 @@ Startup log lines to look for:
   was selected for the frame. Without this line (and without a fallback line)
   no LUT is being applied even though the DLL is injected.
 - `DWM LUT refusing unsupported build ...` - the DLL deliberately did nothing.
+- `DWM LUT refusing to hook: required Present AOB did not match on this build`
+  - `foundPresent=0`: a cumulative update changed `dwmcore.dll`. The DLL did
+  the safe thing. See [Recovering after a cumulative update](#recovering-after-a-cumulative-update).
 
 If the log contains **only** `DWM LUT loading: build=26300` and nothing after
 it, you are running an older v4.1.0 binary: that version rejects every build
@@ -206,6 +220,54 @@ than 1, do not inject: re-derive the signatures/offsets in
 (`IOverlaySwapChain_BackBuffer_vtable_index` and the nested one) cannot be
 verified by an AOB scan and need runtime testing when DWM changes.
 
+### Recovering after a cumulative update
+
+`COverlayContext::Present` is located by a 46-byte **function-prologue** AOB
+(fixed stack size, register saves, stack-cookie reference). A DWM recompile can
+change any of those bytes without changing the function's behavior, so the
+signature goes stale even though the code is still there. The DLL treats a
+missing Present as fatal: `foundPresent=0` means it installs no hooks at all.
+**Do not disable that guard** - hooking an unverified address can crash the
+compositor.
+
+Diagnose on the affected machine. This needs Python 3.9+ (no third-party
+packages), needs no administrator rights and is read-only - both scripts
+only parse the DLL from disk, they never load or patch `dwm.exe`. The
+scripts can be copied to the machine on their own and given an explicit
+DLL path if the repository is not present there:
+
+```
+python tools/verify_dwm_signatures.py
+python tools/derive_present_signature.py
+python tools/derive_present_signature.py --export D:\dwm_diag
+```
+
+`derive_present_signature.py` carries 14 short anchors from the *body* of
+Present on build 26300.9711 (mostly register/stack instructions with no
+relative addresses), also tried with a 4-byte wildcard hole to tolerate a
+changed `rel32`. Anchors that match exactly once vote for the new function
+start (`hit_rva - offset_in_old_function`); the tool prints a candidate 46-byte
+AOB and a hex dump. On 26300.9711 it reproduces the existing `dllmain.cpp`
+signature byte-for-byte (14/14 anchors, RVA `0x22A230`). `--export` also copies
+`dwmcore.dll` and writes `report.json` for offline analysis when no anchor
+survives - send those two files when opening an issue.
+
+A replacement Present AOB is **necessary but not sufficient**. The clip-box
+offset (`0x7698`), the `OverlayTestMode` write target and the two back-buffer
+vtable slots (24/19) are also private to this DWM build and cannot be checked
+by an AOB scan. After updating the signature, rebuild, inject, and confirm
+`Got texture ...`, `Matched LUT ...` and a visible red-blue swap before
+trusting the new build. Also treat the short DirectFlip/OverlaysEnabled hits
+with suspicion: on 26300.9818 they resolve to RVAs `0xF637C` and
+`0x1F49B0` (versus `0x18497C` and `0x1C3E78` on 26300.9711) - wildly
+different deltas for one recompiled binary, which is typical of false
+positives. Because the Present guard fails first, no hook is installed
+and the derived `OverlayTestMode` address is never written to.
+
+Until a fixed build is available, **uninstalling the optional KB5127936
+preview** restores 26300.9711, which is runtime-verified in SDR. Pause Windows
+Update if you need to stay on that build.
+
 ### Adding a new servicing family
 
 Adding a build number to the exact-match list in `DllMain` is only safe after:
@@ -219,6 +281,9 @@ Adding a build number to the exact-match list in `DllMain` is only safe after:
 
 ## Known limitations
 
+- **Builds 26300.9818 / 26200.9818 (KB5127936) are not usable.** The Present AOB
+  does not match the updated `dwmcore.dll`; see the note in Compatibility
+  targets and the recovery procedure above.
 - **HDR is unverified on 26H2.** No HDR-capable display was available for the
   runtime test. The HDR code path (BT.2020 + SMPTE ST 2084 LUT data, `hdr=1`
   LUT matching and the primary-HDR-context fallback) is carried over from 25H2

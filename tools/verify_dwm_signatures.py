@@ -361,6 +361,13 @@ def main() -> int:
     for family, st in family_status.items():
         verdict = "USABLE" if st["resolved"] == st["required"] else "NOT USABLE"
         print(f"  {family:<16} {verdict:<12} resolved {st['resolved']}/{st['required']}, hits {st['hits']}")
+    modern = family_status.get("25H2/26H2")
+    if modern and modern["resolved"] != modern["required"]:
+        print()
+        print("  25H2/26H2 Present AOB did not match - a cumulative update most likely")
+        print("  replaced dwmcore.dll. Do NOT force the hook. To locate the new Present")
+        print("  and/or collect a diagnostic bundle, run:")
+        print("      python tools/derive_present_signature.py --export D:\\dwm_diag")
     if overlay_target:
         print(f"\nOverlayTestMode global (from OverlaysEnabled RIP-relative operand):")
         print(f"  target {overlay_target['target_rva']} in {overlay_target['section']} "

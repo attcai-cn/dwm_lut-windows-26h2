@@ -2,6 +2,36 @@
 
 All notable changes to this maintenance fork are documented here.
 
+## [Unreleased]
+
+### Known issue
+
+- **KB5127936 (build 26300.9818 / 26200.9818) breaks the Present hook.** The
+  October 2026 preview replaces `dwmcore.dll` (`imageSize 0x44B000` ->
+  `0x483000`) and changes the `COverlayContext::Present` prologue, so the
+  46-byte 25H2 AOB no longer matches. The DLL logs
+  `DWM LUT refusing to hook: required Present AOB did not match on this build`
+  (`foundPresent=0`) and installs no hooks rather than patching an unverified
+  address. No replacement signature is shipped yet. Uninstalling the optional
+  preview restores 26300.9711, which is runtime-verified in SDR.
+
+### Added
+
+- `tools/derive_present_signature.py`: locates `COverlayContext::Present` in a
+  changed `dwmcore.dll` using 14 short body anchors from 26300.9711 (plus
+  4-byte wildcard variants), votes on the new function start, emits a candidate
+  46-byte AOB and a hex dump, and can export the DLL with a JSON report for
+  offline analysis. Self-test on 26300.9711 reproduces the existing
+  `dllmain.cpp` signature exactly (14/14 anchors, RVA `0x22A230`). In a
+  simulated break (changed prologue plus two changed `rel32` call targets),
+  `verify_dwm_signatures.py` correctly reported `NOT USABLE` while the tool
+  still recovered `0x22A230` with 14/14 anchors, two of them via wildcard
+  variants.
+- `tools/verify_dwm_signatures.py` now points at the new tool when the
+  25H2/26H2 Present AOB does not resolve.
+- README: KB5127936 compatibility note, the new failing log line, a
+  "Recovering after a cumulative update" procedure and a known-limitation entry.
+
 ## [4.2.1] - 2026-11-07
 
 ### Fixed
