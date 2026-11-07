@@ -45,9 +45,23 @@ All notable changes to this maintenance fork are documented here.
   `0x417708` in writable `.data`.
 - XAML/JSON/C# structure checks, `dllmain.cpp` syntax check (0 errors) and
   `restore-deps.ps1 -GuiOnly` all pass.
-- **26H2 runtime behavior is still unverified**: no successful Apply / visual
-  red-blue test has been observed. The back-buffer vtable slots need a real
-  injection test.
+- **26H2 SDR path runtime-verified** on build 26300.9711 (single-monitor SDR
+  desktop). The injected `dwm_lut.dll` was byte-identical to the v4.2.1 release
+  binary. Over 27 injection sessions the log confirmed `26h2=1 modernOverlay=1`,
+  `Present RVA=0x22A230`, successful `OverlayTestMode` write, and the
+  `overlaySwapChain->vt[24]()->vt2[19]()->QI` back-buffer chain - the two
+  vtable slots that an AOB scan cannot verify. Shaders compiled, `RenderLUT`
+  ran, and `Matched LUT ... hdr=0 lutSize=2` / `lutSize=65` appeared with no
+  failures or exceptions. The red-blue swap LUT was visibly applied.
+
+### Known limitations
+
+- **HDR was not tested** on 26H2 (no HDR-capable display available). BT.2020/ST
+  2084 LUT data, `hdr=1` LUT matching and the primary-HDR-context fallback are
+  inherited from 25H2 but remain unverified on build 26300.
+- **Multi-monitor matching is unverified** on 26H2: the logged clip-box read as
+  all zeros (`left=0 top=0`), which matched the single monitor at (0,0).
+  Displays at non-zero offsets may not find their LUT.
 
 ## [4.2.0] - 2026-11-06
 

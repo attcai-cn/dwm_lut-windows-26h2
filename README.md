@@ -5,11 +5,14 @@
 Repository: **https://github.com/attcai-cn/dwm_lut-windows-26h2**
 
 > [!WARNING]
-> **26H2 (build 26300) is supported.** The 25H2 hook signatures were
-> statically re-verified against the real `dwmcore.dll` on a Windows 11 26H2
-> build 26300.9711 system. This verifies that the hooks still resolve to the
-> right functions; it is **not** a substitute for a visual LUT test on your own
-> GPU/display combination. DWM internals can still change in cumulative updates.
+> **26H2 (build 26300) is supported and runtime-verified in SDR.** On Windows
+> 11 26H2 build 26300.9711 the hook resolves at `Present RVA=0x22A230`, the
+> overlay swap-chain vtable chain returns a usable D3D11 back buffer, and the
+> SDR test LUT visibly reaches the desktop. **HDR was not tested** on this build
+> because no HDR-capable display was available: HDR LUTs, the HDR context
+> fallback and multi-monitor coordinate matching remain unverified. DWM
+> internals can still change in cumulative updates - re-run the signature
+> verifier after each one.
 
 See [CHANGELOG.md](CHANGELOG.md) for the v4.2.x compatibility and safety changes.
 
@@ -54,7 +57,7 @@ undocumented DWM objects and a wrong guess can crash the compositor.
 
 | Windows version | Build | DWM path | Status |
 | --- | --- | --- | --- |
-| Windows 11 26H2 | 26300 | 25H2 shared layout | Supported (statically verified on 26300.9711) |
+| Windows 11 26H2 | 26300 | 25H2 shared layout | Supported (**runtime-verified in SDR** on 26300.9711; HDR untested) |
 | Windows 11 25H2 | 26200 | 25H2 layout | Supported (runtime-tested on 26200.8457) |
 | Windows 11 24H2 | 26100 | 24H2 layout | Supported |
 | Windows 11 21H2-23H2 | 22000-26099 | Legacy Win11 signatures | Supported by upstream fork |
@@ -83,6 +86,32 @@ global derived from `OverlaysEnabled` lands at `0x417708` inside the writable
 `.data` section. The 24H2 Present signature does **not** match, confirming 26H2
 must take the 25H2 branch. The GUI header shows the detected build and whether
 it is supported.
+
+### Runtime verification on Windows 11 26H2 build 26300.9711 (SDR)
+
+A real injection test on a single-monitor SDR desktop confirmed the full SDR
+path, using a `dwm_lut.dll` byte-identical to the one shipped with v4.2.1. The
+test used both `examples/TEST-red-blue-swap.cube` (2^3, visibly obvious) and a
+65^3 calibration LUT. Across 27 injection sessions the log (`dwm_lut.log`)
+showed:
+
+- `DWM LUT loading: build=26300.9711` and
+  `servicing family: 24h2=0 25h2=0 26h2=1 modernOverlay=1 legacyWin11=0` -
+  the exact-family whitelist selects 26H2.
+- `DWM LUT Present RVA=0x22A230` - identical to the static AOB scan.
+- `foundPresent=1`, all three 25H2 signatures resolved, and
+  `Set OverlayTestMode global to 5 in DWM memory` succeeded.
+- `25H2/26H2: Got texture via overlaySwapChain->vt[24]()->vt2[19]()->QI` -
+  **the two back-buffer vtable slots, which cannot be checked by an AOB scan,
+  are valid on 26H2**. This was the last open runtime question.
+- `Initializing from texture device`, successful vertex/pixel shader compilation
+  and `RenderLUT: format=87 ...`.
+- `Matched LUT: monitor left=0 top=0 hdr=0 lutSize=2` (and `lutSize=65` for the
+  calibration LUT) - the LUT was selected for the presented frame.
+- No `failed`, `FAILED`, `error` or `exception` lines in any session.
+
+The red-blue swap was visible on screen. HDR could not be exercised on this
+system; see [Known limitations](#known-limitations) below.
 
 # Usage
 Use DisplayCAL or similar to generate .cube LUT files of any size, run `DwmLutGUI.exe`, assign them to monitors and then click Apply. Note that LUTs cannot be applied to monitors that are in "Duplicate" mode.
@@ -145,6 +174,11 @@ Startup log lines to look for:
 - `DWM LUT servicing family: ... 26h2=1 modernOverlay=1 ...`
 - `DWM LUT Present RVA=0x22A230` - must match the RVA reported by the verifier
   below. A different value means DWM changed and the hook is misplaced.
+- `25H2/26H2: Got texture via overlaySwapChain->vt[24]()->vt2[19]()->QI` -
+  the back-buffer vtable chain worked. On 26H2 this was confirmed at runtime.
+- `Matched LUT: monitor left=... top=... hdr=... lutSize=...` - a configured LUT
+  was selected for the frame. Without this line (and without a fallback line)
+  no LUT is being applied even though the DLL is injected.
 - `DWM LUT refusing unsupported build ...` - the DLL deliberately did nothing.
 
 If the log contains **only** `DWM LUT loading: build=26300` and nothing after
@@ -179,7 +213,26 @@ Adding a build number to the exact-match list in `DllMain` is only safe after:
 1. `tools/verify_dwm_signatures.py` reports a unique Present hit for that build.
 2. The `OverlayTestMode` RIP target resolves into a writable section.
 3. A visual test with `examples/TEST-red-blue-swap.cube` confirms the LUT
-   actually reaches the desktop in both SDR and HDR on that build.
+   actually reaches the desktop in SDR on that build. Test HDR as well when an
+   HDR-capable display is available; if it cannot be tested, say so explicitly
+   in the compatibility table (as for 26H2) instead of claiming full support.
+
+## Known limitations
+
+- **HDR is unverified on 26H2.** No HDR-capable display was available for the
+  runtime test. The HDR code path (BT.2020 + SMPTE ST 2084 LUT data, `hdr=1`
+  LUT matching and the primary-HDR-context fallback) is carried over from 25H2
+  and has not been exercised on build 26300. HDR users should validate with a
+  known-good HDR LUT before relying on it.
+- **Multi-monitor setups are unverified on 26H2.** In the logged sessions the
+  clip-box read as `floats={0.0,0.0,0.0,0.0} ints={0,0}`, giving `left=0
+  top=0`, which matched the single monitor at (0,0) exactly. A second display
+  at a non-zero offset may therefore fail to match its LUT. The single-LUT
+  fallback can cover a one-display configuration but not a multi-LUT setup.
+  Check the `Matched LUT` line in `dwm_lut.log` on multi-monitor systems.
+- Static signature verification still cannot validate the back-buffer vtable
+  slots; only an injection test can. Re-run the verifier after every cumulative
+  update and repeat a visual test if the Present RVA changes.
 
 
 # Compiling
