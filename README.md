@@ -5,18 +5,19 @@
 Repository: **https://github.com/attcai-cn/dwm_lut-windows-26h2**
 
 > [!WARNING]
-> **26H2 (build 26300) is supported and runtime-verified in SDR.** On Windows
-> 11 26H2 build 26300.9711 the hook resolves at `Present RVA=0x22A230`, the
-> overlay swap-chain vtable chain returns a usable D3D11 back buffer, and the
-> SDR test LUT visibly reaches the desktop. **HDR was not tested** on this build
-> because no HDR-capable display was available: HDR LUTs, the HDR context
-> fallback and multi-monitor coordinate matching remain unverified. DWM
-> internals can still change in cumulative updates - re-run the signature
-> verifier after each one.
+> **26H2 (build 26300) is supported and runtime-verified in SDR** on both
+> 26300.9711 and 26300.9818 (KB5127936). On 26300.9711 the hook resolves at
+> `Present RVA=0x22A230`, the overlay swap-chain vtable chain returns a usable
+> D3D11 back buffer, and the SDR test LUT visibly reaches the desktop; on
+> 26300.9818 v4.2.2's tolerant signature resolves at `Present RVA=0x11E7F4`
+> and the SDR LUT was confirmed working by the maintainer. **HDR was not
+> tested** on either build because no HDR-capable display was available: HDR
+> LUTs, the HDR context fallback and multi-monitor coordinate matching remain
+> unverified. DWM internals can still change in cumulative updates - re-run the
+> signature verifier after each one.
 >
-> v4.2.2 restores compatibility with build 26300.9818 (KB5127936). That build's
-> `Present` is verified against Microsoft public symbols but **has not yet been
-> injection-tested**; see [Known limitations](#known-limitations).
+> Releases up to v4.2.1 cannot hook 26300.9818 at all; use **v4.2.2 or newer**.
+> See [Known limitations](#known-limitations).
 
 See [CHANGELOG.md](CHANGELOG.md) for the v4.2.x compatibility and safety changes.
 
@@ -61,7 +62,7 @@ undocumented DWM objects and a wrong guess can crash the compositor.
 
 | Windows version | Build | DWM path | Status |
 | --- | --- | --- | --- |
-| Windows 11 26H2 | 26300 | 25H2 shared layout | Supported (**runtime-verified in SDR** on 26300.9711; 26300.9818 fixed in v4.2.2, static/PDB-verified only; HDR untested) |
+| Windows 11 26H2 | 26300 | 25H2 shared layout | Supported (**SDR runtime-verified** on 26300.9711 and on 26300.9818 with v4.2.2; HDR / multi-monitor untested) |
 | Windows 11 25H2 | 26200 | 25H2 layout | Supported (runtime-tested on 26200.8457) |
 | Windows 11 24H2 | 26100 | 24H2 layout | Supported |
 | Windows 11 21H2-23H2 | 22000-26099 | Legacy Win11 signatures | Supported by upstream fork |
@@ -119,9 +120,9 @@ The large RVA shifts are a **function reorder**, not changed function bodies:
 all three short signatures still match on 9818, and the `OverlayTestMode`
 target derived from `OverlaysEnabled` equals the PDB symbol RVA exactly. The
 hooked `Present` ABI is unchanged. Reproduce with
-`python tools/resolve_dwm_signatures.py <dwmcore.dll>`.
+`python tools/resolve_dwm_symbols.py <dwmcore.dll>`.
 
-### Runtime verification on Windows 11 26H2 build 26300.9711 (SDR)
+### Runtime verification on Windows 11 26H2 (SDR)
 
 A real injection test on a single-monitor SDR desktop confirmed the full SDR
 path, using a `dwm_lut.dll` byte-identical to the one shipped with v4.2.1. The
@@ -145,10 +146,16 @@ showed:
 - No `failed`, `FAILED`, `error` or `exception` lines in any session.
 
 The red-blue swap was visible on screen. HDR could not be exercised on this
-system; see [Known limitations](#known-limitations) below. Build 26300.9818 has
-**not** been injection-tested yet: its Present RVA and the three other symbols
-are confirmed from the PDB, but the clip-box offset and back-buffer vtable slots
-still need a visual SDR test on that build.
+system; see [Known limitations](#known-limitations) below.
+
+**26300.9818 (KB5127936) was subsequently confirmed in SDR with v4.2.2** by the
+maintainer: after injecting the new DLL the LUT applies on that build too. This
+closes the last open runtime question for the tolerant AOB - the inherited
+clip-box offset (`0x7698`) and the back-buffer vtable slots (24/19) also work
+on 9818, since no LUT can reach the desktop without them. The 9711 log above
+remains the line-by-line reference; the 9818 confirmation is a functional SDR
+test rather than a separate full log audit. HDR and multi-monitor setups remain
+untested on both revisions.
 
 # Usage
 Use DisplayCAL or similar to generate .cube LUT files of any size, run `DwmLutGUI.exe`, assign them to monitors and then click Apply. Note that LUTs cannot be applied to monitors that are in "Duplicate" mode.
@@ -311,8 +318,10 @@ this DWM build and cannot be checked by an AOB scan or a public PDB. After
 updating the signature, rebuild, inject, and confirm `Got texture ...`,
 `Matched LUT ...` and a visible red-blue swap before trusting the new build.
 
-If you must stay on a runtime-verified configuration and cannot test 9818,
-uninstalling the optional KB5127936 preview restores 26300.9711.
+Both 26300.9711 and 26300.9818 are now SDR runtime-verified with v4.2.2. If a
+**future** cumulative update is not verified yet, rolling back to a verified
+revision (or uninstalling the optional preview) is the safe fallback; never
+disable the `presentHits == 1` guard to make an unverified build "work".
 
 ### Adding a new servicing family
 
@@ -327,15 +336,15 @@ Adding a build number to the exact-match list in `DllMain` is only safe after:
 
 ## Known limitations
 
-- **Build 26300.9818 (KB5127936) is statically verified but not runtime-tested.**
-  v4.2.2's tolerant Present AOB hits exactly once at `0x11E7F4`, and the other
-  three hooked symbols plus the `OverlayTestMode` write target are confirmed by
-  Microsoft public PDB symbols. What a PDB cannot confirm is the private
-  `COverlayContext` object layout: the clip-box offset (`0x7698`) and the
-  back-buffer vtable slots (24/19) are inherited unchanged from 26300.9711.
-  Owners of that build should run `TEST-red-blue-swap.cube` in SDR and check
-  `dwm_lut.log` for `Got texture ...` and `Matched LUT ...` before relying on it.
-  Releases up to v4.2.1 cannot hook 9818 at all.
+- **Build 26300.9818 (KB5127936) requires v4.2.2 or newer.** It is now
+  PDB/static-verified (`Present RVA=0x11E7F4`) **and SDR runtime-verified**:
+  the maintainer confirmed the LUT applies after injecting v4.2.2. This also
+  indirectly validates the private `COverlayContext` layout inherited from
+  26300.9711 (clip-box offset `0x7698`, back-buffer vtable slots 24/19), which
+  neither an AOB scan nor a public PDB can prove. Releases up to v4.2.1 cannot
+  hook 9818 at all - they log `DWM LUT refusing to hook: required Present AOB
+  did not match on this build` and install no hooks. If the LUT stops working
+  after a Windows update, check the installed version first.
 - **HDR is unverified on 26H2.** No HDR-capable display was available for the
   runtime test. The HDR code path (BT.2020 + SMPTE ST 2084 LUT data, `hdr=1`
   LUT matching and the primary-HDR-context fallback) is carried over from 25H2

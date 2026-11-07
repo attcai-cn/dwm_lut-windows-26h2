@@ -20,7 +20,7 @@ No unreleased changes.
   and installed no hooks. The signature now wildcards those bytes and resolves
   exactly once on both revisions:
   - 26300.9711 -> `0x22A230` (SDR runtime-verified)
-  - 26300.9818 -> `0x11E7F4` (Microsoft public PDB-verified)
+  - 26300.9818 -> `0x11E7F4` (Microsoft public PDB + SDR runtime-verified)
 - The modern-path scan now counts **all** AOB hits across the whole image
   instead of stopping at the first match. `g_modernPresentHits` must equal 1 or
   the hook is refused; ambiguous DirectFlip/OverlaysEnabled hits are dropped
@@ -58,7 +58,7 @@ No unreleased changes.
 - Version bumped to **4.2.2** (assembly, manifest, About window, CI artifact).
 - README compatibility table, Troubleshooting markers, Known limitations and
   recovery procedure updated; the KB5127936 "not usable" limitation is replaced
-  with "statically verified, runtime test pending".
+  with the v4.2.2 SDR runtime-verified status.
 
 ### Verification status
 
@@ -67,9 +67,14 @@ No unreleased changes.
   `0x417708` / `0x44D858` in writable `.data`.
 - Build: `dwm_lut.dll` rebuilt with MSVC 14.51 (0 errors), 60,928 bytes, with
   the same import table as the runtime-verified v4.2.1 DLL.
-- Runtime: 26300.9711 SDR verified with v4.2.1. **26300.9818 has not been
-  injected yet** - the clip-box offset and back-buffer vtable slots still need
-  a visual red-blue test on that build. HDR and multi-monitor remain unverified.
+- Runtime (SDR): 26300.9711 log-audited with v4.2.1 (27 sessions);
+  **26300.9818 (KB5127936) confirmed working with v4.2.2** by the maintainer -
+  the LUT is applied after injection. That also indirectly validates the
+  inherited clip-box offset (`0x7698`) and back-buffer vtable slots (24/19) on
+  9818, which no AOB scan or public PDB can prove. The 9818 confirmation is a
+  functional SDR test, not a line-by-line log audit.
+- Still unverified: HDR on 26H2 (no HDR-capable display), multi-monitor
+  coordinate matching, and any servicing build newer than 26300.9818.
 
 ## [4.2.1] - 2026-11-07
 
