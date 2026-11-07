@@ -276,18 +276,42 @@ const unsigned char COverlayContext_OverlaysEnabled_bytes_w11_25h2[] = {
 	0x83, 0x3D, '?', '?', '?', '?', 0x05, 0x74, 0x09, 0x83, 0x79, 0x28, 0x01, 0x0F, 0x97, 0xC0, 0xC3
 };
 
-// On 25H2: position stored as ints (not floats) at realObj+0xDC (left) and realObj+0xE0 (top)
-int COverlayContext_DeviceClipBox_offset_w11_25h2 = 0x7698;
+/*
+ * Modern overlay layout (Windows 11 25H2 build 26200 and 26H2 build 26300).
+ *
+ * 24H2/25H2/26H2 share one servicing branch (ge_release): 26H2 is delivered
+ * as an enablement package and ships an identical set of system files. The
+ * 25H2 signatures below were re-verified against dwmcore.dll 10.0.26100.9711
+ * on Windows 11 26H2 build 26300.9711 - all three AOBs resolve exactly once.
+ * Use tools/verify_dwm_signatures.py after each cumulative update to confirm.
+ */
+// Monitor position is read from realObj + 0x7698 as rect[2]/rect[3].
+const int COverlayContext_DeviceClipBox_offset_w11_25h2 = 0x7698;
 
 const int IOverlaySwapChain_HardwareProtected_offset_w11_25h2 = 0x4C;
 
-// In 25H2, swap chain is obtained via vtable call at index 33 (offset 0x108)
+// In the 25H2/26H2 layout the swap chain is obtained via vtable index 33 (offset 0x108)
 const int IOverlaySwapChain_GetSwapChain_vtable_offset_w11_25h2 = 0x108;
+
+// 25H2/26H2 back-buffer discovery: overlaySwapChain->vt[24]() -> obj->vt[19]()
+// -> QueryInterface(IID_ID3D11Texture2D). These are the only two hardcoded
+// vtable slots; if a future DWM changes them, only these constants need to be
+// re-derived (the AOB scan is not enough to detect a vtable reshuffle).
+const int IOverlaySwapChain_BackBuffer_vtable_index = 24;
+const int IOverlaySwapChain_BackBuffer_nested_vtable_index = 19;
 
 
 bool isWindows11 = false;
 bool isWindows11_24h2 = false;
 bool isWindows11_25h2 = false;
+bool isWindows11_26h2 = false;
+// 25H2 and 26H2 use the same DWM overlay layout and the same hook ABI.
+bool isModernOverlayPath = false;
+
+// Cached module bounds, used to sanity-check RIP-relative globals and hook
+// targets before writing into DWM's private memory.
+static unsigned char* g_dwmcoreBase = NULL;
+static size_t g_dwmcoreSize = 0;
 
 static DWORD GetWindowsBuildNumber()
 {
@@ -301,6 +325,15 @@ static DWORD GetWindowsBuildNumber()
 	OSVERSIONINFOEXW version = {};
 	version.dwOSVersionInfoSize = sizeof(version);
 	return rtlGetVersion(&version) == 0 ? version.dwBuildNumber : 0;
+}
+
+static DWORD GetWindowsUBR()
+{
+	DWORD ubr = 0;
+	DWORD size = sizeof(ubr);
+	RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "UBR",
+	             RRF_RT_DWORD, NULL, &ubr, &size);
+	return ubr;
 }
 
 // Pointer to DWM's OverlayTestMode global variable (found from OverlaysEnabled AOB)
@@ -629,7 +662,7 @@ bool AddLUTs(char* folder)
 int numLutTargets;
 void** lutTargets;
 
-// 25H2: Track which COverlayContext was initially HDR (main monitor)
+// 25H2/26H2: Track which COverlayContext was initially HDR (main monitor)
 // When a game disables HDR, this context switches to SDR but we still want to apply the LUT to it
 static void* g_primaryHdrContext = NULL;
 
@@ -667,23 +700,37 @@ void UnsetLUTActive(void* target)
 	}
 }
 
+// The modern DWM clip-box stores the monitor origin as 32-bit values, but the
+// exact representation (float vs int) has moved between ge_release builds.
+// Reading an int bit pattern as a float silently produced 0 for every
+// non-primary monitor. Decode both and prefer a plausible screen coordinate.
+static int DecodeClipBoxCoordinate(int bits, float asFloat)
+{
+	if (asFloat >= -65536.0f && asFloat <= 65536.0f &&
+		(asFloat >= 0.5f || asFloat <= -0.5f))
+		return (int)asFloat;
+	return bits;
+}
+
 lutData* GetLUTDataFromCOverlayContext(void* context, bool hdr)
 {
 	int left, top;
 
-	if (isWindows11_25h2)
+	if (isModernOverlayPath)
 	{
 		void* realObj = *(void**)context;
-		float* rect = (float*)((unsigned char*)realObj + 0x7698);
-		// On current 25H2 builds rect[0]/rect[1] are the composed surface size.
-		// The monitor position is stored in rect[2]/rect[3], matching the 24H2
-		// object layout.
-		left = (int)rect[2];
-		top = (int)rect[3];
+		const unsigned char* clipBox = (const unsigned char*)realObj +
+			COverlayContext_DeviceClipBox_offset_w11_25h2;
+		// clipBox[0..1] = composed surface size, clipBox[2..3] = monitor origin.
+		const int* rectInts = (const int*)clipBox;
+		const float* rectFloats = (const float*)clipBox;
+		left = DecodeClipBoxCoordinate(rectInts[2], rectFloats[2]);
+		top = DecodeClipBoxCoordinate(rectInts[3], rectFloats[3]);
 
 		char message_buf[256];
-		sprintf(message_buf, "25H2 LUT lookup: context=0x%p realObj=0x%p rect={%.1f,%.1f,%.1f,%.1f} left=%d top=%d hdr=%d",
-			context, realObj, rect[0], rect[1], rect[2], rect[3], left, top, hdr);
+		sprintf(message_buf, "25H2/26H2 LUT lookup: context=0x%p realObj=0x%p floats={%.1f,%.1f,%.1f,%.1f} ints={%d,%d} left=%d top=%d hdr=%d",
+			context, realObj, rectFloats[0], rectFloats[1], rectFloats[2], rectFloats[3],
+			rectInts[2], rectInts[3], left, top, hdr);
 		LOG_ONLY_ONCE(message_buf)
 	}
 	else if (isWindows11_24h2)
@@ -730,27 +777,28 @@ lutData* GetLUTDataFromCOverlayContext(void* context, bool hdr)
 		}
 	}
 
-	// 25H2 fallback: if this is the primary HDR context but no matching LUT found
-	// (game disabled HDR, context switched to SDR), try matching with opposite HDR flag
-	if (isWindows11_25h2 && g_primaryHdrContext == context)
+	// 25H2/26H2 fallback: if this is the primary HDR context but no matching LUT
+	// was found (a game disabled HDR and the context switched to SDR), try the
+	// opposite HDR flag.
+	if (isModernOverlayPath && g_primaryHdrContext == context)
 	{
 		for (int i = 0; i < numLuts; i++)
 		{
 			if (luts[i].left == left && luts[i].top == top && luts[i].isHdr != hdr)
 			{
 				char message_buf[160];
-				sprintf(message_buf, "Matched 25H2 primary HDR fallback LUT: left=%d top=%d requestedHdr=%d lutHdr=%d", left, top, hdr, luts[i].isHdr);
+				sprintf(message_buf, "Matched 25H2/26H2 primary HDR fallback LUT: left=%d top=%d requestedHdr=%d lutHdr=%d", left, top, hdr, luts[i].isHdr);
 				LOG_ONLY_ONCE(message_buf)
 				return &luts[i];
 			}
 		}
 	}
 
-	// 25H2 single-monitor safety fallback: if the DWM coordinate layout changes
-	// again but the user only configured one LUT for the current SDR/HDR mode,
-	// apply that LUT instead of silently doing nothing. Avoid this on multi-LUT
-	// setups so we do not apply the wrong display's calibration.
-	if (isWindows11_25h2)
+	// 25H2/26H2 single-monitor safety fallback: if the DWM coordinate layout
+	// changes again but the user only configured one LUT for the current SDR/HDR
+	// mode, apply that LUT instead of silently doing nothing. Avoid this on
+	// multi-LUT setups so we do not apply the wrong display's calibration.
+	if (isModernOverlayPath)
 	{
 		lutData* singleModeLut = NULL;
 		int matchingModeLuts = 0;
@@ -766,14 +814,14 @@ lutData* GetLUTDataFromCOverlayContext(void* context, bool hdr)
 		if (matchingModeLuts == 1 && singleModeLut != NULL)
 		{
 			char message_buf[192];
-			sprintf(message_buf, "25H2 single-LUT fallback: using configured LUT left=%d top=%d hdr=%d for detected left=%d top=%d",
+			sprintf(message_buf, "25H2/26H2 single-LUT fallback: using configured LUT left=%d top=%d hdr=%d for detected left=%d top=%d",
 				singleModeLut->left, singleModeLut->top, hdr, left, top);
 			LOG_ONLY_ONCE(message_buf)
 			return singleModeLut;
 		}
 	}
 
-	if (isWindows11_25h2)
+	if (isModernOverlayPath)
 	{
 		char message_buf[256];
 		sprintf(message_buf, "No LUT match: left=%d top=%d hdr=%d numLuts=%d", left, top, hdr, numLuts);
@@ -999,8 +1047,8 @@ bool RenderLUT(void* cOverlayContext, ID3D11Texture2D* backBuffer, struct tagREC
 	else if (newBackBufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
 	{
 		index = 1;
-		// 25H2: Remember which context uses HDR - this is the primary/main monitor
-		if (isWindows11_25h2 && g_primaryHdrContext == NULL)
+		// 25H2/26H2: Remember which context uses HDR - this is the primary/main monitor
+		if (isModernOverlayPath && g_primaryHdrContext == NULL)
 		{
 			g_primaryHdrContext = cOverlayContext;
 		}
@@ -1131,14 +1179,14 @@ bool ApplyLUT(void* cOverlayContext, IDXGISwapChain* swapChain, struct tagRECT* 
 	}
 }
 
-// Apply LUT directly from a back buffer texture (25H2 path - no swap chain needed)
+// Apply LUT directly from a back buffer texture (25H2/26H2 path - no swap chain needed)
 bool ApplyLUTDirect(void* cOverlayContext, ID3D11Texture2D* backBuffer, struct tagRECT* rects, int numRects)
 {
 	try
 	{
 		if (!device)
 		{
-			LOG_ONLY_ONCE("Initializing from texture device (25H2)")
+			LOG_ONLY_ONCE("Initializing from texture device (25H2/26H2)")
 			ID3D11Device* dev;
 			backBuffer->GetDevice(&dev);
 			InitializeStuff(dev);
@@ -1172,59 +1220,74 @@ typedef struct rectVec
 typedef long (COverlayContext_Present_t)(void*, void*, unsigned int, rectVec*, unsigned int, bool);
 typedef long long (COverlayContext_Present_24h2_t)(void*, void*, unsigned int, rectVec*, int, void*, bool);
 
-// Get back buffer texture from overlaySwapChain on 25H2
-// On 25H2, no IDXGISwapChain exists. Instead: overlaySwapChain->vt[24]() -> result->vt[19]() -> QI(ID3D11Texture2D)
-static ID3D11Texture2D* GetBackBuffer_25H2(void* overlaySwapChain)
+// The vtable slots are the only DWM layout detail the AOB scan cannot verify.
+// Reject obviously invalid code pointers before calling into them: a wrong slot
+// would invoke an arbitrary DWM method on a live compositor object.
+static bool IsPlausibleFunctionPointer(void* p)
+{
+	const UINT_PTR addr = (UINT_PTR)p;
+	return addr > 0x10000 && addr < 0x7FFFFFFFFFFF;
+}
+
+// Get back buffer texture from overlaySwapChain on the 25H2/26H2 layout.
+// There is no IDXGISwapChain: overlaySwapChain->vt[24]() -> obj->vt[19]()
+// -> QueryInterface(IID_ID3D11Texture2D).
+static ID3D11Texture2D* GetBackBuffer_Modern(void* overlaySwapChain)
 {
 	__try
 	{
+		char message_buf[192];
 		if (!overlaySwapChain)
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: overlaySwapChain is null")
+			LOG_ONLY_ONCE("25H2/26H2 back-buffer lookup failed: overlaySwapChain is null")
 			return NULL;
 		}
 
 		void** vt = *(void***)overlaySwapChain;
 		if (!vt)
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: overlaySwapChain vtable is null")
+			LOG_ONLY_ONCE("25H2/26H2 back-buffer lookup failed: overlaySwapChain vtable is null")
 			return NULL;
 		}
 
 		typedef void* (__fastcall *VirtFunc)(void*);
 
-		VirtFunc func1 = (VirtFunc)vt[24];
-		if (!func1)
+		VirtFunc func1 = (VirtFunc)vt[IOverlaySwapChain_BackBuffer_vtable_index];
+		if (!IsPlausibleFunctionPointer((void*)func1))
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: vt[24] is null")
+			sprintf(message_buf, "25H2/26H2 back-buffer lookup failed: vt[%d]=0x%p is not a code pointer",
+				IOverlaySwapChain_BackBuffer_vtable_index, (void*)func1);
+			LOG_ONLY_ONCE(message_buf)
 			return NULL;
 		}
 
 		void* r1 = func1(overlaySwapChain);
 		if (!r1)
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: vt[24]() returned null")
+			LOG_ONLY_ONCE("25H2/26H2 back-buffer lookup failed: first vtable call returned null")
 			return NULL;
 		}
 
 		void** vt2 = *(void***)r1;
 		if (!vt2)
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: second vtable is null")
+			LOG_ONLY_ONCE("25H2/26H2 back-buffer lookup failed: second vtable is null")
 			return NULL;
 		}
 
-		VirtFunc func2 = (VirtFunc)vt2[19];
-		if (!func2)
+		VirtFunc func2 = (VirtFunc)vt2[IOverlaySwapChain_BackBuffer_nested_vtable_index];
+		if (!IsPlausibleFunctionPointer((void*)func2))
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: vt2[19] is null")
+			sprintf(message_buf, "25H2/26H2 back-buffer lookup failed: vt2[%d]=0x%p is not a code pointer",
+				IOverlaySwapChain_BackBuffer_nested_vtable_index, (void*)func2);
+			LOG_ONLY_ONCE(message_buf)
 			return NULL;
 		}
 
 		void* r2 = func2(r1);
 		if (!r2)
 		{
-			LOG_ONLY_ONCE("25H2 back-buffer lookup failed: vt2[19]() returned null")
+			LOG_ONLY_ONCE("25H2/26H2 back-buffer lookup failed: second vtable call returned null")
 			return NULL;
 		}
 
@@ -1232,18 +1295,19 @@ static ID3D11Texture2D* GetBackBuffer_25H2(void* overlaySwapChain)
 		HRESULT hr = ((IUnknown*)r2)->QueryInterface(IID_ID3D11Texture2D, (void**)&tex);
 		if (FAILED(hr) || !tex)
 		{
-			char message_buf[160];
-			sprintf(message_buf, "25H2 back-buffer lookup failed: QI(ID3D11Texture2D) hr=0x%08X tex=0x%p", hr, tex);
+			sprintf(message_buf, "25H2/26H2 back-buffer lookup failed: QI(ID3D11Texture2D) hr=0x%08X tex=0x%p", hr, tex);
 			LOG_ONLY_ONCE(message_buf)
 			return NULL;
 		}
 
-		LOG_ONLY_ONCE("25H2: Got texture via overlaySwapChain->vt[24]()->vt2[19]()->QI")
+		sprintf(message_buf, "25H2/26H2: Got texture via overlaySwapChain->vt[%d]()->vt2[%d]()->QI",
+			IOverlaySwapChain_BackBuffer_vtable_index, IOverlaySwapChain_BackBuffer_nested_vtable_index);
+		LOG_ONLY_ONCE(message_buf)
 		return tex;
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		LOG_ONLY_ONCE("25H2 back-buffer lookup failed: structured exception")
+		LOG_ONLY_ONCE("25H2/26H2 back-buffer lookup failed: structured exception")
 		return NULL;
 	}
 }
@@ -1257,20 +1321,21 @@ COverlayContext_Present_24h2_t* COverlayContext_Present_real_orig_24h2 = NULL;
 long long COverlayContext_Present_hook_24h2(void* self, void* overlaySwapChain, unsigned int a3, rectVec* rectVec,
 	int a5, void* a6, bool a7)
 {
-	if (_ReturnAddress() < (void*)COverlayContext_Present_real_orig_24h2 || isWindows11_24h2 || isWindows11_25h2)
+	if (_ReturnAddress() < (void*)COverlayContext_Present_real_orig_24h2 || isWindows11_24h2 || isModernOverlayPath)
 	{
 			LOG_ONLY_ONCE("I am inside COverlayContext::Present hook inside the main if condition")
 			std::stringstream overlay_swapchain_message;
 			overlay_swapchain_message << "OverlaySwapChain address: 0x" << std::hex << overlaySwapChain
 				<< " -- windows 11 25h2: " << isWindows11_25h2
+				<< " -- windows 11 26h2: " << isWindows11_26h2
 				<< " -- windows 11 24h2: " << isWindows11_24h2
 				<< " -- " << "windows 11: " << isWindows11;
 			LOG_ONLY_ONCE(overlay_swapchain_message.str().c_str())
 
-			if (isWindows11_25h2)
+			if (isModernOverlayPath)
 			{
-				// 25H2: Get texture directly from overlaySwapChain via vtable chain
-				ID3D11Texture2D* backBuffer = GetBackBuffer_25H2(overlaySwapChain);
+				// 25H2/26H2: Get texture directly from overlaySwapChain via vtable chain
+				ID3D11Texture2D* backBuffer = GetBackBuffer_Modern(overlaySwapChain);
 				if (backBuffer)
 				{
 					if (ApplyLUTDirect(self, backBuffer, rectVec->start, rectVec->end - rectVec->start))
@@ -1336,7 +1401,7 @@ long long COverlayContext_Present_hook_24h2(void* self, void* overlaySwapChain, 
 					UnsetLUTActive(self);
 				}
 			}
-			} // end else (non-25H2)
+			} // end else (non-25H2/26H2)
 	}
 
 	return COverlayContext_Present_orig_24h2(self, overlaySwapChain, a3, rectVec, a5, a6, a7);
@@ -1444,26 +1509,54 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 		{
 			HMODULE dwmcore = GetModuleHandle(L"dwmcore.dll");
 			MODULEINFO moduleInfo;
-			GetModuleInformation(GetCurrentProcess(), dwmcore, &moduleInfo, sizeof moduleInfo);
+			if (dwmcore == NULL || !GetModuleInformation(GetCurrentProcess(), dwmcore, &moduleInfo, sizeof moduleInfo))
+				return FALSE;
+			g_dwmcoreBase = (unsigned char*)moduleInfo.lpBaseOfDll;
+			g_dwmcoreSize = moduleInfo.SizeOfImage;
 
 			const DWORD buildNumber = GetWindowsBuildNumber();
 			if (buildNumber == 0)
 				return FALSE;
 
 			char startupMessage[256];
-			sprintf(startupMessage, "DWM LUT loading: build=%lu", buildNumber);
+			sprintf(startupMessage, "DWM LUT loading: build=%lu.%lu dwmcore=0x%p imageSize=0x%llX",
+				buildNumber, GetWindowsUBR(), (void*)g_dwmcoreBase, (unsigned long long)g_dwmcoreSize);
 			LOG_ONLY_ONCE(startupMessage)
 
-			// Match exact servicing families. Treating every future build as 25H2 is
-			// dangerous because these offsets point into undocumented DWM objects.
-			isWindows11_25h2 = buildNumber == 26200;
+			/*
+			 * Windows 11 servicing families (exact build match only):
+			 *   22000..26099  legacy Win11 path (21H2/22H2/23H2)
+			 *   26100         24H2
+			 *   26200         25H2
+			 *   26300         26H2 - enablement package over the same ge_release
+			 *                 branch as 24H2/25H2, so it uses the 25H2 DWM layout
+			 *   28000         26H1 - SEPARATE branch, DWM layout unverified
+			 *
+			 * Never treat an unknown newer build as "the latest known layout":
+			 * these offsets point into undocumented DWM objects and a wrong
+			 * guess can crash the desktop compositor. Add a family here only
+			 * after verifying with tools/verify_dwm_signatures.py on that build.
+			 */
 			isWindows11_24h2 = buildNumber == 26100;
+			isWindows11_25h2 = buildNumber == 26200;
+			isWindows11_26h2 = buildNumber == 26300;
+			isModernOverlayPath = isWindows11_25h2 || isWindows11_26h2;
 			isWindows11 = buildNumber >= 22000 && buildNumber < 26100;
 
-			if (buildNumber > 26200)
+			const bool supportedFamily = buildNumber < 22000 || isWindows11 ||
+				isWindows11_24h2 || isModernOverlayPath;
+			if (!supportedFamily)
+			{
+				sprintf(startupMessage, "DWM LUT refusing unsupported build %lu (26H1/28000 and unverified families are rejected)", buildNumber);
+				LOG_ONLY_ONCE(startupMessage)
 				return FALSE;
+			}
 
-			if (isWindows11_25h2)
+			sprintf(startupMessage, "DWM LUT servicing family: 24h2=%d 25h2=%d 26h2=%d modernOverlay=%d legacyWin11=%d",
+				isWindows11_24h2, isWindows11_25h2, isWindows11_26h2, isModernOverlayPath, isWindows11);
+			LOG_ONLY_ONCE(startupMessage)
+
+			if (isModernOverlayPath)
 			{
 				for (size_t i = 0; i <= moduleInfo.SizeOfImage - sizeof COverlayContext_OverlaysEnabled_bytes_w11_25h2; i++)
 				{
@@ -1489,14 +1582,28 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 							address, COverlayContext_OverlaysEnabled_bytes_w11_25h2,
 							sizeof COverlayContext_OverlaysEnabled_bytes_w11_25h2))
 					{
-						// 25H2 OverlaysEnabled is a direct function match (like W11)
+						// 25H2/26H2 OverlaysEnabled is a direct function match (like W11)
 						COverlayContext_OverlaysEnabled_orig = (COverlayContext_OverlaysEnabled_t*)address;
 
 						// Extract the OverlayTestMode global variable address from the instruction:
 						// 83 3D [rip_offset32] 05 = cmp dword ptr [rip+offset], 5
 						// Global var addr = instruction_addr + 7 + *(int32_t*)(instruction_addr + 2)
-						int rip_offset = *(int*)(address + 2);
-						g_pOverlayTestMode = (int*)(address + 7 + rip_offset);
+						// The DLL later WRITES to this pointer. Only accept it when the
+						// target is inside dwmcore's image, otherwise a stale AOB could
+						// corrupt arbitrary memory and take down the compositor.
+						const int rip_offset = *(int*)(address + 2);
+						const INT_PTR target = (INT_PTR)address + 7 + (INT_PTR)rip_offset;
+						const INT_PTR imageStart = (INT_PTR)g_dwmcoreBase;
+						const INT_PTR imageEnd = imageStart + (INT_PTR)g_dwmcoreSize;
+						if (target >= imageStart && target + (INT_PTR)sizeof(int) <= imageEnd)
+						{
+							g_pOverlayTestMode = (int*)target;
+						}
+						else
+						{
+							sprintf(startupMessage, "DWM LUT: rejecting OverlayTestMode target outside dwmcore (rel=0x%X)", rip_offset);
+							LOG_ONLY_ONCE(startupMessage)
+						}
 					}
 					if (COverlayContext_Present_orig_24h2 && COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 &&
 						COverlayContext_OverlaysEnabled_orig)
@@ -1509,37 +1616,39 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 			{
 				for (size_t i = 0; i <= moduleInfo.SizeOfImage - sizeof COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2; i++)
 				{
-					unsigned char* address = (unsigned char*)dwmcore + i;
-					if (!COverlayContext_Present_orig && sizeof COverlayContext_Present_bytes_w11_24h2 <= moduleInfo.
-						SizeOfImage - i && !aob_match_inverse(address, COverlayContext_Present_bytes_w11_24h2,
-							sizeof COverlayContext_Present_bytes_w11_24h2))
-					{
-						COverlayContext_Present_orig_24h2 = (COverlayContext_Present_24h2_t*)address;
-						COverlayContext_Present_real_orig_24h2 = COverlayContext_Present_orig_24h2;
-					}
-					else if (!COverlayContext_IsCandidateDirectFlipCompatbile_orig && sizeof
-						COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_24h2 <= moduleInfo.SizeOfImage - i && !
-						aob_match_inverse(
-							address, COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_24h2,
-							sizeof COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_24h2))
-					{
-						COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 = (
-							COverlayContext_IsCandidateDirectFlipCompatbile_24h2_t*)address;
-					}
-					else if (!COverlayContext_OverlaysEnabled_orig && sizeof COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2
-						<= moduleInfo.SizeOfImage - i && !aob_match_inverse(
-							address, COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2,
-							sizeof COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2))
-					{
-
-
-						COverlayContext_OverlaysEnabled_orig = (COverlayContext_OverlaysEnabled_t*)get_relative_address(address, 1, 5);
-					}
-					if (COverlayContext_Present_orig && COverlayContext_IsCandidateDirectFlipCompatbile_orig &&
-						COverlayContext_OverlaysEnabled_orig)
-					{
-						break;
-					}
+				unsigned char* address = (unsigned char*)dwmcore + i;
+				// These checks must use the 24H2-ABI pointers that this branch
+				// actually fills in. The legacy pointers were checked here before,
+				// so the loop never stopped early and could overwrite a found
+				// address with a later accidental match.
+				if (!COverlayContext_Present_orig_24h2 && sizeof COverlayContext_Present_bytes_w11_24h2 <= moduleInfo.
+					SizeOfImage - i && !aob_match_inverse(address, COverlayContext_Present_bytes_w11_24h2,
+						sizeof COverlayContext_Present_bytes_w11_24h2))
+				{
+					COverlayContext_Present_orig_24h2 = (COverlayContext_Present_24h2_t*)address;
+					COverlayContext_Present_real_orig_24h2 = COverlayContext_Present_orig_24h2;
+				}
+				else if (!COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 && sizeof
+					COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_24h2 <= moduleInfo.SizeOfImage - i && !
+					aob_match_inverse(
+						address, COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_24h2,
+						sizeof COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_24h2))
+				{
+					COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 = (
+						COverlayContext_IsCandidateDirectFlipCompatbile_24h2_t*)address;
+				}
+				else if (!COverlayContext_OverlaysEnabled_orig && sizeof COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2
+					<= moduleInfo.SizeOfImage - i && !aob_match_inverse(
+						address, COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2,
+						sizeof COverlayContext_OverlaysEnabled_bytes_relative_w11_24h2))
+				{
+					COverlayContext_OverlaysEnabled_orig = (COverlayContext_OverlaysEnabled_t*)get_relative_address(address, 1, 5);
+				}
+				if (COverlayContext_Present_orig_24h2 && COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 &&
+					COverlayContext_OverlaysEnabled_orig)
+				{
+					break;
+				}
 				}
 			}
 			else if (isWindows11)
@@ -1634,7 +1743,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 			// changed independently in cumulative updates. Keep them optional on the
 			// modern path so an unrelated signature change does not prevent the DLL
 			// from loading at all.
-			const bool foundPresent = isWindows11_24h2 || isWindows11_25h2
+			const bool usePresent24h2Abi = isWindows11_24h2 || isModernOverlayPath;
+			const bool foundPresent = usePresent24h2Abi
 				? COverlayContext_Present_orig_24h2 != NULL
 				: COverlayContext_Present_orig != NULL;
 
@@ -1644,6 +1754,23 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 				g_pOverlayTestMode, numLuts);
 			LOG_ONLY_ONCE(startupMessage)
 
+			if (foundPresent)
+			{
+				const unsigned char* present = usePresent24h2Abi
+					? (const unsigned char*)COverlayContext_Present_orig_24h2
+					: (const unsigned char*)COverlayContext_Present_orig;
+				// This RVA must match the "COverlayContext::Present" hit reported by
+				// tools/verify_dwm_signatures.py. If it does not, DWM changed and the
+				// hook is pointing at the wrong function.
+				sprintf(startupMessage, "DWM LUT Present RVA=0x%llX (verify with tools/verify_dwm_signatures.py)",
+					(unsigned long long)(present - g_dwmcoreBase));
+				LOG_ONLY_ONCE(startupMessage)
+			}
+			else
+			{
+				LOG_ONLY_ONCE("DWM LUT refusing to hook: required Present AOB did not match on this build")
+			}
+
 			if (foundPresent && numLuts != 0)
 
 			{
@@ -1651,7 +1778,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 				{
 					return FALSE;
 				}
-				if (!isWindows11_24h2 && !isWindows11_25h2)
+				if (!usePresent24h2Abi)
 				{
 					if (MH_CreateHook((PVOID)COverlayContext_Present_orig, (PVOID)COverlayContext_Present_hook,
 						(PVOID*)&COverlayContext_Present_orig) != MH_OK)
@@ -1670,12 +1797,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 					}
 				}
 
-				if (!isWindows11_24h2 && !isWindows11_25h2 &&
+				if (!usePresent24h2Abi &&
 					COverlayContext_IsCandidateDirectFlipCompatbile_orig != NULL)
 					MH_CreateHook((PVOID)COverlayContext_IsCandidateDirectFlipCompatbile_orig,
 								  (PVOID)COverlayContext_IsCandidateDirectFlipCompatbile_hook,
 								  (PVOID*)&COverlayContext_IsCandidateDirectFlipCompatbile_orig);
-				else if ((isWindows11_24h2 || isWindows11_25h2) &&
+				else if (usePresent24h2Abi &&
 					COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 != NULL)
 					MH_CreateHook((PVOID)COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2,
 						(PVOID)COverlayContext_IsCandidateDirectFlipCompatbile_hook_24h2,

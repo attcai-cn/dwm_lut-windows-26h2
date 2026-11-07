@@ -17,6 +17,7 @@
 mono_crash.*
 
 # Build results
+build/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
@@ -208,6 +209,10 @@ PublishScripts/
 
 # vcpkg Packages
 vcpkg_installed/
+
+# Local workspace notes and GUI runtime state (contain machine-specific paths)
+.workbuddy/
+config.xml
 
 # Microsoft Azure Build Output
 csx/

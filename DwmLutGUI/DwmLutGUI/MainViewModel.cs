@@ -29,6 +29,9 @@ namespace DwmLutGUI
 
         public MainViewModel()
         {
+            bool supported;
+            WindowsCompatibilityText = BuildWindowsCompatibilityText(out supported);
+            WindowsSupported = supported;
             UpdateActiveStatus();
             var dispatcherTimer = new System.Windows.Threading.DispatcherTimer();
             dispatcherTimer.Tick += DispatcherTimer_Tick;
@@ -61,6 +64,74 @@ namespace DwmLutGUI
                 OnPropertyChanged();
             }
             get => _activeText;
+        }
+
+        /// <summary>
+        /// Shows the exact servicing family the DLL will select. The DLL refuses
+        /// unknown newer builds rather than guessing DWM offsets, so surfacing
+        /// this in the GUI avoids "Injected but no color change" guesswork.
+        /// </summary>
+        public string WindowsCompatibilityText { get; }
+        public bool WindowsSupported { get; }
+
+        private static string BuildWindowsCompatibilityText(out bool supported)
+        {
+            const string key = @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+            supported = false;
+            try
+            {
+                var buildValue = Microsoft.Win32.Registry.GetValue(key, "CurrentBuild", null);
+                if (buildValue == null) return "Windows build: unknown";
+
+                var build = Convert.ToInt32(buildValue, CultureInfo.InvariantCulture);
+                var ubr = Microsoft.Win32.Registry.GetValue(key, "UBR", 0) ?? 0;
+                var display = Microsoft.Win32.Registry.GetValue(key, "DisplayVersion", null) as string;
+                var label = string.IsNullOrEmpty(display) ? "Windows" : display;
+
+                // Keep in sync with the servicing families in lutdwm/dllmain.cpp.
+                string status;
+                switch (build)
+                {
+                    case 26300:
+                        status = "26H2 - supported (25H2 DWM layout)";
+                        supported = true;
+                        break;
+                    case 26200:
+                        status = "25H2 - supported";
+                        supported = true;
+                        break;
+                    case 26100:
+                        status = "24H2 - supported";
+                        supported = true;
+                        break;
+                    case 28000:
+                        status = "26H1 - NOT supported (unverified DWM layout)";
+                        break;
+                    default:
+                        if (build < 22000)
+                        {
+                            status = "supported (legacy signatures)";
+                            supported = true;
+                        }
+                        else if (build < 26100)
+                        {
+                            status = "supported (legacy Win11 signatures)";
+                            supported = true;
+                        }
+                        else
+                        {
+                            status = "NOT supported (unverified servicing family)";
+                        }
+                        break;
+                }
+
+                return string.Format(CultureInfo.InvariantCulture, "{0} | build {1}.{2} | {3}",
+                    label, build, ubr, status);
+            }
+            catch (Exception)
+            {
+                return "Windows build: unknown";
+            }
         }
 
         public MonitorData SelectedMonitor

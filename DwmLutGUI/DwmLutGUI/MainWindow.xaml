@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:DwmLutGUI"
         mc:Ignorable="d"
-        Title="dwm_lut" Height="560" Width="920" MinHeight="520" MinWidth="760"
+        Title="dwm_lut" Height="560" Width="920" MinHeight="460" MinWidth="760"
         Background="#0B1020" Foreground="#E5E7EB" FontFamily="Segoe UI">
     <Window.DataContext>
         <local:MainViewModel />
@@ -137,6 +137,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Border Style="{StaticResource Card}" Grid.Row="0">
@@ -149,7 +150,20 @@
                 <StackPanel>
                     <TextBlock Text="dwm_lut" FontSize="28" FontWeight="SemiBold" />
                     <TextBlock Style="{StaticResource MutedText}" Margin="0,4,0,0"
-                               Text="Windows 11 25H2 desktop LUT injector" />
+                               Text="Windows 11 26H2 desktop LUT injector" />
+                    <TextBlock Margin="0,2,0,0" FontSize="12"
+                               Text="{Binding WindowsCompatibilityText}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                <Setter Property="Foreground" Value="{StaticResource Accent}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding WindowsSupported}" Value="False">
+                                        <Setter Property="Foreground" Value="{StaticResource Danger}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -171,7 +185,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Border Style="{StaticResource Card}" Grid.Column="0" Margin="0,0,0,0">
+            <Border Style="{StaticResource Card}" Grid.Column="0" Margin="0">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
                         <TextBlock Text="Displays" FontSize="18" FontWeight="SemiBold" />
@@ -242,8 +256,11 @@
                 </DockPanel>
             </Border>
 
-            <StackPanel Grid.Column="2">
-                <Border Style="{StaticResource Card}">
+            <!-- The setup pane scrolls on its own, so shrinking the window can never
+                 clip the Apply/Disable buttons: those live in the pinned bar below. -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Padding="0,0,4,0">
+                <Border Style="{StaticResource Card}" Margin="0">
                     <StackPanel>
                         <TextBlock Text="LUT setup" FontSize="18" FontWeight="SemiBold" />
                         <TextBlock Style="{StaticResource MutedText}" Margin="0,3,0,14"
@@ -266,7 +283,7 @@
                                     Click="SdrLutClear_Click" />
                         </Grid>
 
-                        <TextBlock Text="HDR LUT" FontWeight="SemiBold" Margin="0,0,0,6" />
+                        <TextBlock Text="HDR LUT" FontWeight="SemiBold" Margin="0,0,0,14" />
                         <Grid Margin="0,0,0,14">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -286,33 +303,38 @@
                         <Button Content="Load included SDR test LUT" Click="LoadTestLut_Click" />
                     </StackPanel>
                 </Border>
-
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="Controls" FontSize="18" FontWeight="SemiBold" />
-                        <TextBlock Style="{StaticResource MutedText}" Margin="0,3,0,14"
-                                   Text="Apply injects into DWM. Closing the app disables first." />
-
-                        <TextBlock Text="Toggle key" FontWeight="SemiBold" Margin="0,0,0,6" />
-                        <ComboBox x:Name="ToggleKeyCombo" SelectedItem="{Binding ToggleKey}" Margin="0,0,0,14" />
-
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="8" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Button Grid.Column="0" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanApply}"
-                                    Content="Apply LUT" Click="Apply_Click" />
-                            <Button Grid.Column="2" Style="{StaticResource DangerButton}" IsEnabled="{Binding IsActive}"
-                                    Content="Disable" Click="Disable_Click" />
-                        </Grid>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
+            </ScrollViewer>
         </Grid>
 
-        <TextBlock Grid.Row="2" Style="{StaticResource MutedText}" HorizontalAlignment="Center"
+        <!-- Pinned action bar: always visible, even when the window is short. -->
+        <Border Grid.Row="2" Margin="0,4,0,10" Padding="14,12"
+                Background="#0D1526" BorderBrush="#243044" BorderThickness="1" CornerRadius="14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="Toggle key" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ComboBox x:Name="ToggleKeyCombo" Width="120" SelectedItem="{Binding ToggleKey}" />
+                </StackPanel>
+
+                <TextBlock Grid.Column="1" Style="{StaticResource MutedText}"
+                           VerticalAlignment="Center" Margin="16,0,16,0" TextWrapping="Wrap"
+                           Text="Assign a LUT above, then click Apply LUT to inject into DWM." />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource DangerButton}" MinWidth="96" Margin="0,0,8,0"
+                            IsEnabled="{Binding IsActive}" Content="Disable" Click="Disable_Click" />
+                    <Button Style="{StaticResource PrimaryButton}" MinWidth="128"
+                            IsEnabled="{Binding CanApply}" Content="Apply LUT" Click="Apply_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <TextBlock Grid.Row="3" Style="{StaticResource MutedText}" HorizontalAlignment="Center"
                    Text="Tip: minimize keeps the LUT active; closing disables and unloads dwm_lut.dll." />
     </Grid>
 </Window>
