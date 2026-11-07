@@ -247,14 +247,29 @@ const int IOverlaySwapChain_HardwareProtected_offset_w11_24h2 = 0x64;
 
 
 /**
- * AOB for function COverlayContext_Present_bytes_w11_25h2
+ * AOB for COverlayContext::Present on the 25H2 / 26H2 servicing branch.
  *
- * 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F9 48 81 EC F8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 EF 4C 8B 65 ?? 48 8B D9
+ * KB5127936 (26300.9818 / 26200.9818) recompiled and reordered dwmcore.dll.
+ * The function prologue stayed the same shape but changed in ten bytes:
+ *   [21..24] stack allocation        0xF8 -> 0x98
+ *   [28..31] security-cookie rel32   (moves with the image layout)
+ *   [41]     mov r12/r13 from rbp    0x65 -> 0x6D
+ *   [42]     frame disp8             (tolerated too)
+ *   [45]     mov rbx/rdi from rcx    0xD9 -> 0xF9
+ * Those bytes are wildcarded so ONE signature covers both revisions. Verified
+ * against Microsoft public PDB symbols (dwmcore.pdb):
+ *   26300.9711  -> RVA 0x22A230   (runtime-verified with a red/blue test LUT)
+ *   26300.9818  -> RVA 0x11E7F4   (PDB 9DE99623809A4EC51C7666968D57F7AB1)
+ * Both DLLs produce exactly one hit. Because wildcards make false positives
+ * possible, DllMain now counts every hit and refuses to hook unless there is
+ * exactly one (see g_modernPresentHits).
+ *
+ * 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F9 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 EF 4C 8B ?? ?? 48 8B ??
  */
 const unsigned char COverlayContext_Present_bytes_w11_25h2[] = {
 	0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C,
-	0x24, 0xF9, 0x48, 0x81, 0xEC, 0xF8, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05,
-	'?', '?', '?', '?', 0x48, 0x33, 0xC4, 0x48, 0x89, 0x45, 0xEF, 0x4C, 0x8B, 0x65, '?', 0x48, 0x8B, 0xD9
+	0x24, 0xF9, 0x48, 0x81, 0xEC, '?', '?', '?', '?', 0x48, 0x8B, 0x05,
+	'?', '?', '?', '?', 0x48, 0x33, 0xC4, 0x48, 0x89, 0x45, 0xEF, 0x4C, 0x8B, '?', '?', 0x48, 0x8B, '?'
 };
 
 /**
@@ -340,6 +355,11 @@ static DWORD GetWindowsUBR()
 static int* g_pOverlayTestMode = NULL;
 static int g_originalOverlayTestMode = 0;
 static bool g_overlayTestModeSaved = false;
+
+// Number of locations matching the modern (25H2/26H2) Present AOB. The
+// tolerant pattern uses wildcards, so more than one hit is unsafe: hooking the
+// first match could patch an unrelated DWM function.
+static int g_modernPresentHits = 0;
 
 bool aob_match_inverse(const void* buf1, const void* mask, const int buf_len)
 {
@@ -1558,30 +1578,50 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 
 			if (isModernOverlayPath)
 			{
-				for (size_t i = 0; i <= moduleInfo.SizeOfImage - sizeof COverlayContext_OverlaysEnabled_bytes_w11_25h2; i++)
+				// The tolerant Present AOB contains wildcards. Scan the entire image
+				// and count every hit for all three signatures instead of stopping at
+				// the first match. Present must resolve to EXACTLY one address; only
+				// then is it safe to hook. The two helper signatures are optional, but
+				// an ambiguous hit must not be used to derive a writable global.
+				int directFlipHits = 0;
+				int overlaysHits = 0;
+				const size_t presentSigLen = sizeof COverlayContext_Present_bytes_w11_25h2;
+				for (size_t i = 0; i + presentSigLen <= moduleInfo.SizeOfImage; i++)
 				{
 					unsigned char* address = (unsigned char*)dwmcore + i;
-					if (!COverlayContext_Present_orig_24h2 && sizeof COverlayContext_Present_bytes_w11_25h2 <= moduleInfo.
-						SizeOfImage - i && !aob_match_inverse(address, COverlayContext_Present_bytes_w11_25h2,
-							sizeof COverlayContext_Present_bytes_w11_25h2))
+
+					if (!aob_match_inverse(address, COverlayContext_Present_bytes_w11_25h2,
+						sizeof COverlayContext_Present_bytes_w11_25h2))
 					{
-						COverlayContext_Present_orig_24h2 = (COverlayContext_Present_24h2_t*)address;
-						COverlayContext_Present_real_orig_24h2 = COverlayContext_Present_orig_24h2;
+						g_modernPresentHits++;
+						if (g_modernPresentHits == 1)
+						{
+							COverlayContext_Present_orig_24h2 = (COverlayContext_Present_24h2_t*)address;
+							COverlayContext_Present_real_orig_24h2 = COverlayContext_Present_orig_24h2;
+						}
 					}
-					else if (!COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 && sizeof
-						COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_25h2 <= moduleInfo.SizeOfImage - i && !
-						aob_match_inverse(
-							address, COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_25h2,
+
+					if (sizeof COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_25h2 <= moduleInfo.SizeOfImage - i &&
+						!aob_match_inverse(address,
+							COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_25h2,
 							sizeof COverlayContext_IsCandidateDirectFlipCompatbile_bytes_w11_25h2))
 					{
-						COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 = (
-							COverlayContext_IsCandidateDirectFlipCompatbile_24h2_t*)address;
+						directFlipHits++;
+						if (directFlipHits == 1)
+						{
+							COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 = (
+								COverlayContext_IsCandidateDirectFlipCompatbile_24h2_t*)address;
+						}
 					}
-					else if (!COverlayContext_OverlaysEnabled_orig && sizeof COverlayContext_OverlaysEnabled_bytes_w11_25h2
-						<= moduleInfo.SizeOfImage - i && !aob_match_inverse(
-							address, COverlayContext_OverlaysEnabled_bytes_w11_25h2,
+
+					if (sizeof COverlayContext_OverlaysEnabled_bytes_w11_25h2 <= moduleInfo.SizeOfImage - i &&
+						!aob_match_inverse(address, COverlayContext_OverlaysEnabled_bytes_w11_25h2,
 							sizeof COverlayContext_OverlaysEnabled_bytes_w11_25h2))
 					{
+						overlaysHits++;
+						if (overlaysHits != 1)
+							continue;
+
 						// 25H2/26H2 OverlaysEnabled is a direct function match (like W11)
 						COverlayContext_OverlaysEnabled_orig = (COverlayContext_OverlaysEnabled_t*)address;
 
@@ -1605,11 +1645,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 							LOG_ONLY_ONCE(startupMessage)
 						}
 					}
-					if (COverlayContext_Present_orig_24h2 && COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 &&
-						COverlayContext_OverlaysEnabled_orig)
-					{
-						break;
-					}
+				}
+
+				sprintf(startupMessage, "DWM LUT modern AOB hits: present=%d directFlip=%d overlays=%d (present must be exactly 1)",
+					g_modernPresentHits, directFlipHits, overlaysHits);
+				LOG_ONLY_ONCE(startupMessage)
+
+				// Ambiguous helper signatures are optional - drop them instead of
+				// hooking an arbitrary function or writing to a guessed global.
+				if (directFlipHits != 1)
+				{
+					COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2 = NULL;
+				}
+				if (overlaysHits != 1)
+				{
+					COverlayContext_OverlaysEnabled_orig = NULL;
+					g_pOverlayTestMode = NULL;
 				}
 			}
 			else if (isWindows11_24h2)
@@ -1744,12 +1795,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 			// modern path so an unrelated signature change does not prevent the DLL
 			// from loading at all.
 			const bool usePresent24h2Abi = isWindows11_24h2 || isModernOverlayPath;
-			const bool foundPresent = usePresent24h2Abi
+			// A tolerant AOB is only safe when it resolves to exactly one address.
+			const bool presentUnambiguous = !isModernOverlayPath || g_modernPresentHits == 1;
+			const bool foundPresent = presentUnambiguous && (usePresent24h2Abi
 				? COverlayContext_Present_orig_24h2 != NULL
-				: COverlayContext_Present_orig != NULL;
+				: COverlayContext_Present_orig != NULL);
 
-			sprintf(startupMessage, "DWM LUT signatures: foundPresent=%d present24=0x%p presentLegacy=0x%p directFlip24=0x%p overlays=0x%p overlayTestMode=0x%p numLuts=%d",
-				foundPresent, COverlayContext_Present_orig_24h2, COverlayContext_Present_orig,
+			sprintf(startupMessage, "DWM LUT signatures: foundPresent=%d presentHits=%d present24=0x%p presentLegacy=0x%p directFlip24=0x%p overlays=0x%p overlayTestMode=0x%p numLuts=%d",
+				foundPresent, g_modernPresentHits, COverlayContext_Present_orig_24h2, COverlayContext_Present_orig,
 				COverlayContext_IsCandidateDirectFlipCompatbile_orig_24h2, COverlayContext_OverlaysEnabled_orig,
 				g_pOverlayTestMode, numLuts);
 			LOG_ONLY_ONCE(startupMessage)
@@ -1765,6 +1818,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpReserved)
 				sprintf(startupMessage, "DWM LUT Present RVA=0x%llX (verify with tools/verify_dwm_signatures.py)",
 					(unsigned long long)(present - g_dwmcoreBase));
 				LOG_ONLY_ONCE(startupMessage)
+			}
+			else if (isModernOverlayPath && g_modernPresentHits > 1)
+			{
+				LOG_ONLY_ONCE("DWM LUT refusing to hook: Present AOB matched multiple locations (ambiguous)")
 			}
 			else
 			{

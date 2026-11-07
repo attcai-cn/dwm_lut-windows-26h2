@@ -364,7 +364,12 @@ def main() -> int:
     print(f"\n  {survived}/{len(ANCHORS)} anchors produced a unique hit.")
     if not votes:
         print("\n  No anchor survived: Present was substantially rewritten.")
-        print("  Re-run with --export DIR and send dwmcore.dll + report.json to the maintainer.")
+        print("  This is expected on KB5127936 / 26300.9818, which reordered and")
+        print("  recompiled the function (0/14 anchors on that DLL).")
+        print("  Use the authoritative PDB route instead:")
+        print("      python tools/resolve_dwm_symbols.py <dwmcore.dll>")
+        print("  If the symbol server is unreachable, re-run with --export DIR and")
+        print("  send dwmcore.dll + report.json to the maintainer.")
         return 1
     print(f"\n=== candidate Present start(s) ===")
     for c in ranked[:3]:
@@ -378,8 +383,10 @@ def main() -> int:
     print("  * A unique anchor hit is evidence, not proof. Check the suggested AOB")
     print("    against a disassembler before putting it into dllmain.cpp, and verify")
     print("    the hook's back-buffer vtable chain at runtime.")
-    print("  * Short DirectFlip/OverlaysEnabled hits after an update may be false")
-    print("    positives - compare their RVAs with the previous build.")
+    print("  * Short DirectFlip/OverlaysEnabled hits after an update can look like")
+    print("    false positives but may be genuine - DWM reorders functions by")
+    print("    hundreds of KB. Cross-check with tools/resolve_dwm_symbols.py, which")
+    print("    compares the OverlaysEnabled RIP target with the PDB global symbol.")
     print("  * While broken, the DLL correctly refuses to hook. Do NOT relax that")
     print("    guard: hooking the wrong address can crash dwm.exe.")
     if args.export:

@@ -27,10 +27,21 @@ import sys
 from dataclasses import dataclass, field
 
 # '??' is a one-byte wildcard, matching the '?' entries in dllmain.cpp.
+# Version-tolerant prologue: KB5127936 changed the stack allocation, the
+# security-cookie rel32 and two register-allocation bytes. Wildcarding those
+# lets one pattern cover both the pre- and post-update dwmcore.dll. Keep this
+# byte-for-byte in sync with COverlayContext_Present_bytes_w11_25h2.
 PRESENT_25H2 = """
-40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F9 48 81 EC F8 00 00 00
-48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 EF 4C 8B 65 ?? 48 8B D9
+40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F9 48 81 EC ?? ?? ?? ??
+48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 EF 4C 8B ?? ?? 48 8B ??
 """
+
+# COverlayContext::Present RVAs confirmed with Microsoft public PDB symbols.
+# A hit at any other RVA means the pattern matched something else - refuse it.
+KNOWN_MODERN_PRESENT_RVAS = {
+    0x22A230: "26300.9711 / pre-KB5127936 (SDR runtime-verified)",
+    0x11E7F4: "26300.9818 / KB5127936 (PDB-verified)",
+}
 DIRECTFLIP_25H2 = """
 48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 20 33 DB
 """
@@ -361,12 +372,29 @@ def main() -> int:
     for family, st in family_status.items():
         verdict = "USABLE" if st["resolved"] == st["required"] else "NOT USABLE"
         print(f"  {family:<16} {verdict:<12} resolved {st['resolved']}/{st['required']}, hits {st['hits']}")
+    modern_present = next(
+        (r for r in results
+         if r.signature.family == "25H2/26H2" and r.signature.name == "COverlayContext::Present"),
+        None,
+    )
+    if modern_present and len(modern_present.matches) == 1:
+        rva = modern_present.matches[0].rva
+        known = KNOWN_MODERN_PRESENT_RVAS.get(rva)
+        if known:
+            print(f"  Modern Present RVA 0x{rva:X} matches a known build: {known}")
+        else:
+            print(f"  WARNING: modern Present hit 0x{rva:X} is not a known RVA. Confirm it")
+            print("  is COverlayContext::Present before enabling the hook:")
+            print("      python tools/resolve_dwm_symbols.py <path-to-dwmcore.dll>")
+
     modern = family_status.get("25H2/26H2")
     if modern and modern["resolved"] != modern["required"]:
         print()
-        print("  25H2/26H2 Present AOB did not match - a cumulative update most likely")
-        print("  replaced dwmcore.dll. Do NOT force the hook. To locate the new Present")
-        print("  and/or collect a diagnostic bundle, run:")
+        print("  25H2/26H2 Present AOB did not resolve uniquely - a cumulative update")
+        print("  most likely replaced dwmcore.dll. Do NOT force the hook. To get the")
+        print("  authoritative RVA from Microsoft public symbols, run:")
+        print("      python tools/resolve_dwm_symbols.py <path-to-dwmcore.dll>")
+        print("  and, if the PDB is unavailable, try the byte-anchor fallback:")
         print("      python tools/derive_present_signature.py --export D:\\dwm_diag")
     if overlay_target:
         print(f"\nOverlayTestMode global (from OverlaysEnabled RIP-relative operand):")

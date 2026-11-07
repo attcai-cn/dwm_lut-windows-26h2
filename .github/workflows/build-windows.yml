@@ -76,7 +76,7 @@ jobs:
           Copy-Item $dll $dist
           Copy-Item examples/TEST-red-blue-swap.cube $dist
           @"
-          dwm_lut v4.2.1 - Windows 11 26H2 build
+          dwm_lut v4.2.2 - Windows 11 26H2 build
 
           1. Extract this ZIP into a fresh folder.
           2. Run DwmLutGUI.exe as Administrator.
@@ -87,12 +87,12 @@ jobs:
           Keep all files in this folder together. Do not copy dwm_lut.dll to System32.
           "@ | Set-Content "$dist/README.txt" -Encoding UTF8
           Compress-Archive -Path "$dist/*" `
-            -DestinationPath "$env:GITHUB_WORKSPACE/build/dwm_lut-v4.2.1-windows-x64.zip"
+            -DestinationPath "$env:GITHUB_WORKSPACE/build/dwm_lut-v4.2.2-windows-x64.zip"
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: dwm_lut-v4.2.1-windows-x64
-          path: build/dwm_lut-v4.2.1-windows-x64.zip
+          name: dwm_lut-v4.2.2-windows-x64
+          path: build/dwm_lut-v4.2.2-windows-x64.zip
           if-no-files-found: error
           retention-days: 14

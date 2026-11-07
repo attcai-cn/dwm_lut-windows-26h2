@@ -4,33 +4,72 @@ All notable changes to this maintenance fork are documented here.
 
 ## [Unreleased]
 
-### Known issue
+No unreleased changes.
 
-- **KB5127936 (build 26300.9818 / 26200.9818) breaks the Present hook.** The
-  October 2026 preview replaces `dwmcore.dll` (`imageSize 0x44B000` ->
-  `0x483000`) and changes the `COverlayContext::Present` prologue, so the
-  46-byte 25H2 AOB no longer matches. The DLL logs
+## [4.2.2] - 2026-11-07
+
+### Fixed
+
+- **KB5127936 (26300.9818 / 26200.9818) no longer breaks the Present hook.**
+  The October 2026 preview recompiles and reorders `dwmcore.dll`
+  (`imageSize 0x483000` vs `0x44B000` on 26300.9711) and changes ten bytes in
+  the `COverlayContext::Present` prologue: the stack allocation (`0xF8` ->
+  `0x98`), the security-cookie `rel32`, and three register-allocation bytes.
+  The old strict 46-byte AOB gave `foundPresent=0`, so the DLL logged
   `DWM LUT refusing to hook: required Present AOB did not match on this build`
-  (`foundPresent=0`) and installs no hooks rather than patching an unverified
-  address. No replacement signature is shipped yet. Uninstalling the optional
-  preview restores 26300.9711, which is runtime-verified in SDR.
+  and installed no hooks. The signature now wildcards those bytes and resolves
+  exactly once on both revisions:
+  - 26300.9711 -> `0x22A230` (SDR runtime-verified)
+  - 26300.9818 -> `0x11E7F4` (Microsoft public PDB-verified)
+- The modern-path scan now counts **all** AOB hits across the whole image
+  instead of stopping at the first match. `g_modernPresentHits` must equal 1 or
+  the hook is refused; ambiguous DirectFlip/OverlaysEnabled hits are dropped
+  rather than being used to derive a writable global. New diagnostics:
+  `presentHits=%d` and
+  `DWM LUT modern AOB hits: present=... directFlip=... overlays=...`.
+- Corrected an earlier assumption: the short DirectFlip/OverlaysEnabled hits on
+  26300.9818 (`0xF637C` / `0x1F49B0`) are **genuine**, not false positives.
+  PDB symbols show the update reordered functions by hundreds of KB without
+  changing their bodies, and the derived `OverlayTestMode` target `0x44D858`
+  matches `?m_dwOverlayTestMode@CCommonRegistryData@@0KA` exactly.
 
 ### Added
 
-- `tools/derive_present_signature.py`: locates `COverlayContext::Present` in a
-  changed `dwmcore.dll` using 14 short body anchors from 26300.9711 (plus
-  4-byte wildcard variants), votes on the new function start, emits a candidate
-  46-byte AOB and a hex dump, and can export the DLL with a JSON report for
-  offline analysis. Self-test on 26300.9711 reproduces the existing
-  `dllmain.cpp` signature exactly (14/14 anchors, RVA `0x22A230`). In a
-  simulated break (changed prologue plus two changed `rel32` call targets),
-  `verify_dwm_signatures.py` correctly reported `NOT USABLE` while the tool
-  still recovered `0x22A230` with 14/14 anchors, two of them via wildcard
-  variants.
-- `tools/verify_dwm_signatures.py` now points at the new tool when the
-  25H2/26H2 Present AOB does not resolve.
-- README: KB5127936 compatibility note, the new failing log line, a
-  "Recovering after a cumulative update" procedure and a known-limitation entry.
+- `tools/resolve_dwm_symbols.py`: reads the PE debug directory, downloads the
+  matching PDB from Microsoft's public symbol server (cached under
+  `%LOCALAPPDATA%\DwmLut\symbols`), parses the MSF 7.0 public-symbol stream
+  and reports authoritative RVAs for the four hooked symbols. Cross-checks the
+  `OverlaysEnabled` RIP operand against the PDB global and checks the current
+  46-byte AOB against the DLL. Python 3.8+, no third-party packages, read-only.
+  Verified end-to-end on both 26300.9711 (automatic download) and 26300.9818.
+- `tools/verify_dwm_signatures.py` now uses the tolerant AOB, recognises both
+  known Present RVAs, warns when a hit lands on an unknown RVA, and points at
+  `resolve_dwm_symbols.py` when the pattern does not resolve uniquely.
+- `tools/derive_present_signature.py` (from the previous unreleased commit):
+  14 short body anchors plus 4-byte wildcard variants vote for a new Present
+  start and can export `dwmcore.dll` + `report.json` for offline analysis.
+  Self-test on 26300.9711 reproduces the old `dllmain.cpp` signature exactly
+  (14/14, RVA `0x22A230`); a simulated break still recovered it while the
+  verifier correctly reported `NOT USABLE`. Its 9711 anchors do not survive
+  KB5127936 (0/14), so the PDB tool is now the preferred route.
+
+### Changed
+
+- Version bumped to **4.2.2** (assembly, manifest, About window, CI artifact).
+- README compatibility table, Troubleshooting markers, Known limitations and
+  recovery procedure updated; the KB5127936 "not usable" limitation is replaced
+  with "statically verified, runtime test pending".
+
+### Verification status
+
+- Static: `verify_dwm_signatures.py` reports `25H2/26H2 USABLE` on both
+  26300.9711 and 26300.9818 (one Present hit each); `OverlayTestMode` targets
+  `0x417708` / `0x44D858` in writable `.data`.
+- Build: `dwm_lut.dll` rebuilt with MSVC 14.51 (0 errors), 60,928 bytes, with
+  the same import table as the runtime-verified v4.2.1 DLL.
+- Runtime: 26300.9711 SDR verified with v4.2.1. **26300.9818 has not been
+  injected yet** - the clip-box offset and back-buffer vtable slots still need
+  a visual red-blue test on that build. HDR and multi-monitor remain unverified.
 
 ## [4.2.1] - 2026-11-07
 
@@ -243,7 +282,8 @@ Earlier release history is available from the
 [lauralex maintenance fork](https://github.com/lauralex/dwm_lut/releases) and
 the [original ledoge project](https://github.com/ledoge/dwm_lut/releases).
 
-[Unreleased]: https://github.com/attcai-cn/dwm_lut-windows-26h2/compare/v4.2.1...HEAD
+[Unreleased]: https://github.com/attcai-cn/dwm_lut-windows-26h2/compare/v4.2.2...HEAD
+[4.2.2]: https://github.com/attcai-cn/dwm_lut-windows-26h2/releases/tag/v4.2.2
 [4.2.1]: https://github.com/attcai-cn/dwm_lut-windows-26h2/releases/tag/v4.2.1
 [4.2.0]: https://github.com/attcai-cn/dwm_lut-windows-26h2/releases/tag/v4.2.0
 [4.1.0]: https://github.com/attcai-cn/dwm_lut-windows-26h2/releases/tag/v4.1.0
