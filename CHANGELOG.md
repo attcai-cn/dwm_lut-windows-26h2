@@ -59,6 +59,10 @@ No unreleased changes.
 - README compatibility table, Troubleshooting markers, Known limitations and
   recovery procedure updated; the KB5127936 "not usable" limitation is replaced
   with the v4.2.2 SDR runtime-verified status.
+- Release packaging: the bundled `README.txt` in both the local ZIP and the CI
+  artifact now records the 9818 SDR runtime verification instead of "not yet
+  injection-tested", and states that **one v4.2.2 ZIP covers 24H2/25H2/26H2 and
+  both 9711 / 9818 revisions** - no per-build download is needed.
 
 ### Verification status
 

@@ -6,7 +6,8 @@ Repository: **https://github.com/attcai-cn/dwm_lut-windows-26h2**
 
 > [!WARNING]
 > **26H2 (build 26300) is supported and runtime-verified in SDR** on both
-> 26300.9711 and 26300.9818 (KB5127936). On 26300.9711 the hook resolves at
+> 26300.9711 (with v4.2.1) and 26300.9818 / KB5127936 (with v4.2.2).
+> On 26300.9711 the hook resolves at
 > `Present RVA=0x22A230`, the overlay swap-chain vtable chain returns a usable
 > D3D11 back buffer, and the SDR test LUT visibly reaches the desktop; on
 > 26300.9818 v4.2.2's tolerant signature resolves at `Present RVA=0x11E7F4`
@@ -62,13 +63,21 @@ undocumented DWM objects and a wrong guess can crash the compositor.
 
 | Windows version | Build | DWM path | Status |
 | --- | --- | --- | --- |
-| Windows 11 26H2 | 26300 | 25H2 shared layout | Supported (**SDR runtime-verified** on 26300.9711 and on 26300.9818 with v4.2.2; HDR / multi-monitor untested) |
+| Windows 11 26H2 | 26300 | 25H2 shared layout | Supported (**SDR runtime-verified**: 26300.9711 with v4.2.1, 26300.9818/KB5127936 with v4.2.2; one v4.2.2 package covers both; HDR / multi-monitor untested) |
 | Windows 11 25H2 | 26200 | 25H2 layout | Supported (runtime-tested on 26200.8457) |
 | Windows 11 24H2 | 26100 | 24H2 layout | Supported |
 | Windows 11 21H2-23H2 | 22000-26099 | Legacy Win11 signatures | Supported by upstream fork |
 | Windows 10 20H2/21H1 | < 22000 | Legacy signatures | Supported by upstream fork |
 | Windows 11 26H1 | 28000 | Separate branch | **Rejected** - DWM layout unverified |
 | Any other future build | - | - | **Rejected** until verified |
+
+**One release package covers all supported builds.** The DLL hardcodes no RVA:
+at startup it scans the machine's own `dwmcore.dll` with the tolerant Present
+pattern and hooks its single unique match (`0x22A230` on 9711, `0x11E7F4` on
+9818). Servicing-family checks use the OS build number, not the `dwmcore.dll`
+file version, so there is no per-build download - install v4.2.2 on 24H2, 25H2
+and 26H2 alike. If a future cumulative update changes the pattern again, that
+needs a **new release**, not a second ZIP on this one.
 
 > [!IMPORTANT]
 > **KB5127936 (build 26300.9818 / 26200.9818, October 2026 preview) broke the

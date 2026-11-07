@@ -76,15 +76,43 @@ jobs:
           Copy-Item $dll $dist
           Copy-Item examples/TEST-red-blue-swap.cube $dist
           @"
-          dwm_lut v4.2.2 - Windows 11 26H2 build
+          dwm_lut v4.2.2 - Windows 11 26H2 (26300) / 25H2 (26200) / 24H2 (26100)
 
-          1. Extract this ZIP into a fresh folder.
-          2. Run DwmLutGUI.exe as Administrator.
-          3. Click "Load included SDR test LUT", then "Apply LUT" in the bottom bar.
-             Loading a LUT only saves config.xml; Apply is what injects into DWM.
-          4. Diagnostics are written beside DwmLutGUI.exe as dwm_lut.log.
+          WHAT'S NEW IN 4.2.2
+            Fixes "DWM LUT refusing to hook: required Present AOB did not match"
+            on 26300.9818 / 26200.9818 (KB5127936). One tolerant signature now
+            resolves exactly once on both revisions:
+                26300.9711 -> RVA 0x22A230   (SDR runtime-verified)
+                26300.9818 -> RVA 0x11E7F4   (SDR runtime-verified with v4.2.2)
+            A uniqueness guard refuses to hook when the pattern is not unique.
 
-          Keep all files in this folder together. Do not copy dwm_lut.dll to System32.
+          QUICK START
+            1. Extract EVERYTHING into one NEW folder. Do not mix files from an
+               older release - the injector copies dwm_lut.dll from the GUI's folder.
+            2. Right-click DwmLutGUI.exe -> Run as administrator.
+            3. Click "Load included SDR test LUT", then "Apply LUT" (both are in
+               the pinned bar at the bottom). Loading alone does NOT inject.
+               The screen should visibly swap red and blue.
+            4. Replace the test LUT with your calibration .cube once confirmed.
+
+          CHECK THE LOG
+            dwm_lut.log is written next to DwmLutGUI.exe after Apply. Confirm:
+                DWM LUT modern AOB hits: present=1 directFlip=1 overlays=1
+                DWM LUT Present RVA=0x11E7F4   (9818)  or  0x22A230 (9711)
+                25H2/26H2: Got texture via overlaySwapChain->vt[24]()->vt2[19]()->QI
+                Matched LUT: monitor left=... top=... hdr=... lutSize=...
+            If present != 1 the DLL refuses to hook on purpose. From the repo run:
+                python tools/verify_dwm_signatures.py <path-to-dwmcore.dll>
+                python tools/resolve_dwm_symbols.py <path-to-dwmcore.dll>
+
+          VERIFICATION STATUS
+            SDR runtime-verified on 26300.9711 (v4.2.1, 27 log-audited sessions)
+            and on 26300.9818 / KB5127936 (v4.2.2, maintainer visual test).
+            One package covers both; no per-build download is needed.
+            HDR and multi-monitor setups remain unverified on 26H2.
+
+          Keep all files together. Never copy dwm_lut.dll into System32.
+          Disable the LUT before installing a Windows feature update.
           "@ | Set-Content "$dist/README.txt" -Encoding UTF8
           Compress-Archive -Path "$dist/*" `
             -DestinationPath "$env:GITHUB_WORKSPACE/build/dwm_lut-v4.2.2-windows-x64.zip"
